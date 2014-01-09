@@ -363,7 +363,7 @@ class Mesh:
 					island.is_inside_out = True
 		
 			# construct a linked list from each island's boundary
-			# uvedge.neighbor_right is counterclockwise around face = via uvedge.vb if not uvface.flipped
+			# uvedge.neighbor_ccw is counterclockwise around face = via uvedge.vb if not uvface.flipped
 			neighbor_lookup, conflicts = dict(), dict()
 			for uvedge in island.boundary_sorted:
 				uvvertex = uvedge.va if not uvedge.uvface.flipped else uvedge.vb
@@ -378,8 +378,8 @@ class Mesh:
 			for uvedge in island.boundary_sorted:
 				uvvertex = uvedge.vb if not uvedge.uvface.flipped else uvedge.va
 				if uvvertex not in conflicts:
-					uvedge.neighbor_right = neighbor_lookup[uvvertex]
-					uvedge.neighbor_right.neighbor_left = uvedge
+					uvedge.neighbor_ccw = neighbor_lookup[uvvertex]
+					uvedge.neighbor_ccw.neighbor_cw = uvedge
 				else:
 					conflicts[uvvertex].append(uvedge)
 			
@@ -387,11 +387,11 @@ class Mesh:
 			direction_to_float = lambda vector: (1 - vector.x/vector.length) if vector.y > 0 else (vector.x/vector.length - 1)
 			for uvvertex, uvedges in conflicts.items():
 				is_inwards = lambda uvedge: uvedge.uvface.flipped == (uvedge.va is uvvertex)
-				uvedge_sortkey = lambda uvedge: direction_to_float((uvedge.va.co-uvedge.vb.co) if is_inwards(uvedge) else (uvedge.vb.co-uvedge.va.co))
+				uvedge_sortkey = lambda uvedge: direction_to_float((uvedge.vb.co-uvedge.va.co) if is_inwards(uvedge) else (uvedge.va.co-uvedge.vb.co))
 				uvedges.sort(key=uvedge_sortkey)
 				for right, left in zip(uvedges[:-1:2], uvedges[1::2]) if is_inwards(uvedges[0]) else zip([uvedges[-1]]+uvedges[1::2], uvedges[:-1:2]):
-					left.neighbor_right = right
-					right.neighbor_left = left
+					right.neighbor_ccw = left
+					left.neighbor_cw = right
 		return True
 	
 	def mark_cuts(self):
@@ -411,11 +411,11 @@ class Mesh:
 				if uvedge_priority(uvedge_a) < uvedge_priority(uvedge_b):
 					uvedge_a, uvedge_b = uvedge_b, uvedge_a
 				target_island = uvedge_a.island
-				left_edge, right_edge = uvedge_a.neighbor_left.edge, uvedge_a.neighbor_right.edge
+				left_edge, right_edge = uvedge_a.neighbor_cw.edge, uvedge_a.neighbor_ccw.edge
 				if do_create_numbers:
 					for uvedge in [uvedge_b] + edge.uvedges[2:]:
-						if (uvedge.neighbor_left.edge is not right_edge or uvedge.neighbor_right.edge is not left_edge) and\
-								uvedge not in (uvedge_a.neighbor_left, uvedge_a.neighbor_right):
+						if (uvedge.neighbor_cw.edge is not right_edge or uvedge.neighbor_ccw.edge is not left_edge) and\
+								uvedge not in (uvedge_a.neighbor_cw, uvedge_a.neighbor_ccw):
 							# it is perhaps not easy to see that these uvedges should be sticked together. So, create an arrow and put the index on all stickers
 							target_island.sticker_numbering += 1
 							index = str(target_island.sticker_numbering)
@@ -1418,7 +1418,7 @@ class SVG:
 								boundary_loop.extend(uvedge.sticker.vertices[1:])
 							else:
 								boundary_loop.append(uvedge.vb if not uvedge.uvface.flipped else uvedge.va)
-							uvedge = uvedge.neighbor_right
+							uvedge = uvedge.neighbor_ccw
 						data_outer.append(line_through(self.format_vertex(uv.co, rot, pos) for uv in boundary_loop))
 						data_outer.append("Z")
 					
