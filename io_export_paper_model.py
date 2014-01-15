@@ -58,7 +58,7 @@ Additional links:
     e-mail: adominec {at} gmail {dot} com
 
 """
-import bpy, bgl
+import bpy, bgl, bmesh
 import mathutils as M
 from re import compile as re_compile
 from itertools import chain
@@ -1433,7 +1433,7 @@ class SVG:
 				f.write("</svg>")
 
 class MakeUnfoldable(bpy.types.Operator):
-	"""Blender Operator: unfold the selected object."""
+	"""Unfold the active object"""
 	bl_idname = "mesh.make_unfoldable"
 	bl_label = "Make Unfoldable"
 	bl_description = "Mark seams so that the mesh can be exported as a paper model"
@@ -1447,7 +1447,7 @@ class MakeUnfoldable(bpy.types.Operator):
 	
 	@classmethod
 	def poll(cls, context):
-		return context.active_object and context.active_object.type=="MESH"
+		return context.active_object and context.active_object.type == 'MESH'
 		
 	def draw(self, context):
 		layout = self.layout
@@ -1543,7 +1543,7 @@ class PaperModelStyle(bpy.types.PropertyGroup):
 bpy.utils.register_class(PaperModelStyle)
 
 class ExportPaperModel(bpy.types.Operator):
-	"""Blender Operator: save the selected object's net and optionally bake its texture"""
+	"""Save the selected object's net and optionally bake its texture"""
 	bl_idname = "export_mesh.paper_model"
 	bl_label = "Export Paper Model"
 	bl_description = "Export the selected object's net and optionally bake its texture"
@@ -1695,6 +1695,65 @@ class ExportPaperModel(bpy.types.Operator):
 def menu_func(self, context):
 	self.layout.operator("export_mesh.paper_model", text="Paper Model (.svg)")
 
+class SwitchTab(bpy.types.Operator):
+	"""Switch the tab for the selected face and active edge"""
+	bl_idname = "mesh.switch_tab"
+	bl_label = "Switch Tab"
+	bl_description = "Enable the paper modeling tab for the selected edges"
+	bl_options = {'REGISTER', 'UNDO'}
+	#operation = bpy.props.EnumProperty(name="Operation", description="Operation to perform if only edges are selected", default='NEXT', items=[
+			#('NEXT', "Next", "Flip tab to another position"),
+			#('ALL', "Set All", "Enable all tabs"),
+			#('NONE', "Clear All", "Disable all tabs"),
+			#('RESET', "Reset", "Revert to automatic choice")])
+	
+	@classmethod
+	def poll(cls, context):
+		return context.active_object and context.active_object.type == 'MESH' and \
+		       context.object.mode == 'EDIT'
+	
+	def execute(self, context):
+		ob = context.active_object
+		bm = bmesh.from_edit_mesh(ob.data)
+		
+		tabs = bm.loops.layers.int.get("tabs")
+		if not tabs:
+			tabs = bm.loops.layers.int.new("tabs")
+		
+		if 'EDGE' in bm.select_mode:
+			# apply to tabs around all selected edges
+			for edge in bm.edges:
+				if not edge.select or len(edge.link_loops) <= 1 or \
+					 (not edge.seam and len(edge.link_loops) == 2):
+					continue
+				index = min(i for i, loop in enumerate(edge.link_loops) if loop[tabs] == -1) if any(loop[tabs] == -1 for loop in edge.link_loops) else 0
+				edge.link_loops[index][tabs] = 1
+				edge.link_loops[index-1][tabs] = -1
+		
+		elif 'FACE' in bm.select_mode:
+			# apply to tabs on the boundary of the selected faces
+			affected_edges = dict() # edge -> face
+			for face in bm.faces:
+				if not face.select:
+					continue
+				for loop in face.loops:
+					if loop.edge in affected_edges:
+						# set this edge as not being on boundary
+						affected_edges[loop.edge] = None
+					else:
+						affected_edges[loop.edge] = loop
+			affected_edges = {edge: loop for (edge, loop) in affected_edges.items() if loop is not None}
+			for edge, loop in affected_edges.items():
+				if loop is None:
+					continue
+				for other_loop in edge.link_loops:
+					other_loop[tabs] = 1 if other_loop is loop else -1
+						
+		for area in context.screen.areas:
+			if area.type == 'VIEW_3D':
+				area.tag_redraw()
+		return {'FINISHED'}
+
 class VIEW3D_PT_paper_model(bpy.types.Panel):
 	bl_label = "Paper Model"
 	bl_space_type = "VIEW_3D"
@@ -1718,11 +1777,11 @@ class VIEW3D_PT_paper_model(bpy.types.Panel):
 		layout.operator("mesh.make_unfoldable")
 		box = layout.box()
 		if mesh and mesh.paper_island_list:
+			box.operator("mesh.switch_tab")
 			box.label(text="1 island:" if len(mesh.paper_island_list) == 1 else "{} islands:".format(len(mesh.paper_island_list)))
 			box.template_list('UI_UL_list', 'paper_model_island_list', mesh, 'paper_island_list', mesh, 'paper_island_index', rows=1, maxrows=5)
 			# The first one is the identifier of the registered UIList to use (if you want only the default list,
 			# with no custom draw code, use "UI_UL_list").
-			# layout.template_list("MATERIAL_UL_matslots_example", "", obj, "material_slots", obj, "active_material_index")
 			if mesh.paper_island_index >= 0:
 				list_item = mesh.paper_island_list[mesh.paper_island_index]
 				sub = box.column(align=True)
@@ -1741,10 +1800,10 @@ class VIEW3D_PT_paper_model(bpy.types.Panel):
 		row.active = bool(sce.paper_model.display_islands and mesh and mesh.paper_island_list)
 		row.prop(sce.paper_model, "islands_alpha", slider=True)
 		
-		#sub = box.column(align=True)
-		#sub.active = bool(mesh.paper_island_list)
-		#sub.prop(sce.paper_model, "display_tabs", icon='RESTRICT_VIEW_OFF')
-		#sub.prop(sce.paper_model, "display_tabs_size")
+		sub = box.column(align=True)
+		sub.active = bool(mesh.paper_island_list)
+		sub.prop(sce.paper_model, "display_tabs", icon='RESTRICT_VIEW_OFF')
+		sub.prop(sce.paper_model, "display_tabs_size")
 		
 		layout.operator("export_mesh.paper_model")
 	
@@ -1813,16 +1872,17 @@ class IslandList(bpy.types.PropertyGroup):
 bpy.utils.register_class(FaceList)
 bpy.utils.register_class(IslandList)
 
-#flip = bm.edges.layers.int.new("flip_tab")
-#bmm.edges[0][bmm.edges.layers.int["flip_tab"]]
-
 def display_tabs(self, context):
-	if context.active_object.type != 'MESH':
+	if context.mode != 'EDIT_MESH':
 		return
-	from bmesh import new as BMesh
-	bm = BMesh()
+	
 	ob = context.active_object
-	bm.from_mesh(ob.data)
+	bm = bmesh.from_edit_mesh(ob.data)
+	
+	tabs = bm.loops.layers.int.get("tabs")
+	if not tabs:
+		return
+	
 	size = context.scene.paper_model.display_tabs_size
 	
 	# remember the original value
@@ -1835,29 +1895,31 @@ def display_tabs(self, context):
 		bgl.glLoadMatrixf(perspBuff)
 		bgl.glMatrixMode(bgl.GL_MODELVIEW)
 		bgl.glLoadIdentity()
-		#objectBuff = bgl.Buffer(bgl.GL_FLOAT, (4,4), ob.matrix_world.transposed())
-		#bgl.glLoadMatrixf(objectBuff)
 		bgl.glEnable(bgl.GL_POLYGON_OFFSET_LINE)
-		bgl.glPolygonOffset(0, -10) #offset in Zbuffer to remove flicker
+		bgl.glPolygonOffset(0, -100) #offset in Zbuffer to remove flicker
 		bgl.glPolygonMode(bgl.GL_FRONT_AND_BACK, bgl.GL_LINE)
 		bgl.glColor3f(1.0, 0.2, 0.0)
 		
 		matworld = ob.matrix_world
-		lin = matworld.to_3x3()
+		lin = matworld.to_3x3() # rotation & scaling of the object
 		inv = lin.inverted()
-		invt = inv.transposed()
+		invt = inv.transposed() # transformation of face normals
 		
 		for edge in bm.edges:
-			# TODO: skip uncut edges whatsoever
-			for loop in edge.link_loops[1:]: # TODO: use custom edge layer to skip the correct one
+			if not edge.seam:
+				continue
+			length = edge.calc_length()
+			for loop in edge.link_loops: # TODO: use custom edge layer to skip the correct one
+				if loop[tabs] != -1:
+					continue
 				face = loop.face
 				va, vb = loop.vert, loop.link_loop_next.vert
 				
-				# TODO: decrease the size and increase the shear depending on the face's shape
-				shear = lin*(vb.co - va.co)
-				offset = -shear.cross(invt*face.normal)
-				shear = shear * size / shear.length
-				offset = offset * size / offset.length
+				size_clamped = min(size, 0.4 * (vb.co - va.co).length)
+				shear = lin * (vb.co - va.co)
+				offset = -shear.cross(invt * face.normal)
+				shear = shear * size_clamped / shear.length
+				offset = offset * size_clamped / offset.length
 				
 				bgl.glBegin(bgl.GL_POLYGON)
 				bgl.glVertex3f(*(matworld*va.co))
